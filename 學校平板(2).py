@@ -1,17 +1,23 @@
-import tkinter as tk
-from tkinter import messagebox
-import gspread
+
+import os
+import sys
+import tkinter as tk #把 tkinter 這個做視窗介面的套件載入，並把它簡稱叫 tk。
+from tkinter import messagebox # 從 tkinter 裡面「只」載入 messagebox 這個功能
+import gspread #載入 gspread 這個套件，讓 Python 可以操作 Google Sheets（Google 試算表）
 from oauth2client.service_account import ServiceAccountCredentials
 
 # -------------------------
 #  Google Sheets 連線設定
 # -------------------------
-def connect_google_sheet():
+def connect_google_sheet(): 
     scope = ["https://spreadsheets.google.com/feeds",
              "https://www.googleapis.com/auth/drive"]
 
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # 取得目前檔案目錄
+    SERVICE_ACCOUNT = os.path.join(BASE_DIR, "service_account.json")
+    
     creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "service_account.json",
+        SERVICE_ACCOUNT,
         scope
     )
 
