@@ -1,75 +1,46 @@
 import tkinter as tk
-from tkinter import messagebox
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from tkinter import ttk
+from PIL import Image, ImageTk  # 用 PIL 處理圖片
 
 # -------------------------
-#  Google Sheets 連線設定
+#  全域設定
 # -------------------------
-def connect_google_sheet():
-    scope = ["https://spreadsheets.google.com/feeds",
-             "https://www.googleapis.com/auth/drive"]
+FONT = ("Arial", 12)
+MAX_TABLETS = 50
+TEACHERS = [
+    "本孚","幃捷","舒婷","珊瑩","郁均","李安","佳佳","孟璇","婉湄","逸銓",
+    "惠如","百育","峻維","品妤","彥宏","勇宏","盈盈","斐雁","淨瑜","俊萱",
+    "裕貞","慧娟","晉邦","迪文"
+]
 
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "service_account.json", 
-        scope
-    )
-
-    client = gspread.authorize(creds)
-
-    # ⚠ 請改成你的試算表名稱
-    sheet = client.open("ipadinnout").sheet1
-    return sheet
-
-
-# -------------------------
-#   寫入試算表
-# -------------------------
-def submit_data():
-    teacher = entry_teacher.get().strip()
-    count = entry_count.get().strip()
-
-    if teacher == "" or count == "":
-        messagebox.showwarning("錯誤", "請輸入完整資料！")
-        return
-    
-    try:
-        count = int(count)
-    except:
-        messagebox.showerror("格式錯誤", "台數必須是數字！")
-        return
-
-    sheet.append_row([teacher, count])
-
-    entry_teacher.delete(0, tk.END)
-    entry_count.delete(0, tk.END)
-
-    messagebox.showinfo("成功", "資料已成功提交！")
-
-
-# -------------------------
-#   Tkinter UI 建立介面
-# -------------------------
 root = tk.Tk()
 root.title("平板借用系統")
-root.geometry("350x250")
+root.geometry("360x280")
 
-sheet = connect_google_sheet()
+# -------------------------
+#  設置背景圖片
+# -------------------------
+# 載入圖片
+bg_image = Image.open("84fd58bd-7092-4ceb-aa1d-e11979579c67.png")
+bg_image = bg_image.resize((360, 280))  # 調整成視窗大小
+bg_photo = ImageTk.PhotoImage(bg_image)
 
-label1 = tk.Label(root, text="借用人姓名：", font=("微軟正黑體", 12))
-label1.pack(pady=5)
+# 建立 Canvas 並放入背景
+canvas = tk.Canvas(root, width=360, height=280)
+canvas.pack(fill="both", expand=True)
+canvas.create_image(0, 0, image=bg_photo, anchor="nw")
 
-entry_teacher = tk.Entry(root, font=("微軟正黑體", 12))
-entry_teacher.pack(pady=5)
+# -------------------------
+#  將元件放到 Canvas 上
+# -------------------------
+tk.Label(root, text="借用人：", font=FONT, bg="#ffffff").place(x=30, y=30)
+combo_teacher = ttk.Combobox(root, values=TEACHERS, state="readonly", font=FONT)
+combo_teacher.place(x=150, y=30)
 
-label2 = tk.Label(root, text="借用平板台數：", font=("微軟正黑體", 12))
-label2.pack(pady=5)
+tk.Label(root, text="借用平板台數：", font=FONT, bg="#ffffff").place(x=30, y=80)
+entry_count = tk.Entry(root, font=FONT)
+entry_count.place(x=150, y=80)
 
-entry_count = tk.Entry(root, font=("微軟正黑體", 12))
-entry_count.pack(pady=5)
-
-btn_submit = tk.Button(root, text="送出借用紀錄", font=("微軟正黑體", 12),
-                       command=submit_data)
-btn_submit.pack(pady=10)
+tk.Button(root, text="送出借用", font=FONT).place(x=130, y=150)
 
 root.mainloop()
