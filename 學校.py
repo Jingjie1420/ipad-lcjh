@@ -1,130 +1,193 @@
-import tkinter as tk  # 匯入 tkinter，建立 GUI 視窗介面
-from tkinter import messagebox  # 匯入訊息框功能，用來顯示提醒、錯誤或成功訊息
-from tkinter import ttk  # 匯入 ttk 模組，用於進階元件（例如 Combobox）
-import gspread  # 匯入 gspread，用於操作 Google Sheets
-from oauth2client.service_account import ServiceAccountCredentials  # OAuth2 認證用
-from datetime import datetime  # 匯入 datetime，用來取得當前日期時間
-import os  # 匯入 os，用於處理檔案路徑
+import tkinter as tk
+from tkinter import ttk, messagebox
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timedelta
+import os
 
-# -------------------------
-#  全域設定
-# -------------------------
-FONT = ("Arial", 12)  # 定義全域字型，Label/Entry/Button 都可以使用
-MAX_TABLETS = 50  # 最大可借平板數量限制改為 50
-TEACHERS = [      # 借用人列表，可以依實際需求修改
+# =====================
+# UI 設定
+# =====================
+BG = "#F4F6F8"
+CARD = "#FFFFFF"
+BTN = "#4A90E2"
+FONT_TITLE = ("Arial", 16, "bold")
+FONT = ("Arial", 12)
+MAX_TABLETS = 50
+
+TEACHERS = [
     "本孚","幃捷","舒婷","珊瑩","郁均","李安","佳佳","孟璇","婉湄","逸銓",
     "惠如","百育","峻維","品妤","彥宏","勇宏","盈盈","斐雁","淨瑜","俊萱",
     "裕貞","慧娟","晉邦","迪文"
 ]
 
-# -------------------------
-#  連線 Google Sheets
-# -------------------------
+# =====================
+# Google Sheets
+# =====================
 def connect_google_sheet():
-    # 設定授權範圍
     scope = [
-        "https://spreadsheets.google.com/feeds",  # 操作 Sheets API
-        "https://www.googleapis.com/auth/drive"  # 存取 Google Drive
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
     ]
-
-    # 取得專案根目錄路徑
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    # 拼接 service_account.json 的完整路徑
-    json_path = os.path.join(BASE_DIR, "service_account.json")
-
-    # 透過 service_account.json 建立憑證
+    base = os.path.dirname(os.path.abspath(__file__))
     creds = ServiceAccountCredentials.from_json_keyfile_name(
-        json_path,
-        scope
+        os.path.join(base, "service_account.json"), scope
     )
+    return gspread.authorize(creds).open("ipadinnout").sheet1
 
-    # 用憑證授權 gspread
-    client = gspread.authorize(creds)
-    # 開啟名為 "ipadinnout" 的試算表，回傳第一個工作表
-    return client.open("ipadinnout").sheet1
+sheet = connect_google_sheet()
 
-# -------------------------
-#  檢查是否已借出
-# -------------------------
-def is_already_borrowed(name):
-    records = sheet.get_all_records()  # 取得 Google Sheet 所有紀錄（轉成 dict list）
-    for r in records:
-        # 如果借用人相同，且尚未歸還
-        if r["借用人"] == name and r["歸還時間"] == "":
-            return True
-    return False  # 沒有重複借用
+# =====================
+# 借用中清單
+# =====================
+def refresh_borrow_list():
+    for w in borrow_frame.winfo_children():
+        w.destroy()
 
-# -------------------------
-#  送出借用紀錄
-# -------------------------
+    rows = sheet.get_all_values()[1:]
+    r = 0
+
+    for idx, row in enumerate(rows, start=2):
+        if len(row) < 6 or row[4] != "":
+            continue
+
+        info = f"{row[0]}｜{row[1]} 台｜到 {row[3]}"
+        tk.Label(borrow_frame, text=info, bg=CARD).grid(row=r, column=0, sticky="w", pady=4)
+
+        tk.Button(
+            borrow_frame, text="續借",
+            bg="#5CB85C", fg="white", width=6,
+            command=lambda i=idx: renew(i)
+        ).grid(row=r, column=1, padx=3)
+
+        tk.Button(
+            borrow_frame, text="歸還",
+            bg="#D9534F", fg="white", width=6,
+            command=lambda i=idx: return_with_sign(i)
+        ).grid(row=r, column=2, padx=3)
+
+        r += 1
+
+# =====================
+# 新借用（1~50 防呆）
+# =====================
 def submit_data():
-    teacher = combo_teacher.get()  # 取得下拉選單選擇的借用人
-    count_text = entry_count.get().strip()  # 取得輸入框平板數量，並去除空白
+    teacher = combo_teacher.get()
+    count_text = entry_count.get().strip()
 
-    # 欄位驗證
     if teacher == "" or count_text == "":
         messagebox.showwarning("錯誤", "請選擇借用人並輸入台數")
         return
 
     try:
-        count = int(count_text)  # 嘗試轉成整數
-        if not (1 <= count <= MAX_TABLETS):  # 檢查範圍，現在最大 50
+        count = int(count_text)
+        if not (1 <= count <= MAX_TABLETS):
             raise ValueError
     except:
-        messagebox.showerror("錯誤", f"台數必須是 1～{MAX_TABLETS} 的整數")
+        messagebox.showerror("錯誤", "台數必須是 1～50 的整數")
         return
 
-    # 檢查是否已借出
-    if is_already_borrowed(teacher):
-        messagebox.showerror("錯誤", f"{teacher} 尚未歸還，不能重複借用")
-        return
+    start = datetime.now()
+    end = start + timedelta(minutes=45)
 
-    # 取得目前時間
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sheet.append_row([
+        teacher,
+        count,
+        start.strftime("%Y-%m-%d %H:%M:%S"),
+        end.strftime("%Y-%m-%d %H:%M:%S"),
+        "",
+        ""
+    ])
 
-    # 將紀錄新增到 Google Sheet
-    sheet.append_row([teacher, count, now, ""])
-
-    # 清空輸入框
     entry_count.delete(0, tk.END)
-    # 顯示成功訊息
-    messagebox.showinfo("成功", "借用紀錄已送出")
+    refresh_borrow_list()
+    messagebox.showinfo("成功", "借用完成（45 分鐘）")
 
-# -------------------------
-#  Tkinter UI
-# -------------------------
-root = tk.Tk()  # 建立主視窗
-root.title("平板借用系統")  # 視窗標題
-root.geometry("360x280")  # 視窗大小
+# =====================
+# 續借（複製成新一行）
+# =====================
+def renew(row):
+    teacher = sheet.cell(row, 1).value
+    count = sheet.cell(row, 2).value
 
-sheet = connect_google_sheet()  # 連線 Google Sheets
+    start = datetime.now()
+    end = start + timedelta(minutes=45)
 
-# 借用人標籤
-tk.Label(root, text="借用人：", font=FONT).pack(pady=5)
+    sheet.append_row([
+        teacher,
+        count,
+        start.strftime("%Y-%m-%d %H:%M:%S"),
+        end.strftime("%Y-%m-%d %H:%M:%S"),
+        "",
+        ""
+    ])
 
-# 借用人下拉選單
-combo_teacher = ttk.Combobox(
-    root,
-    values=TEACHERS,  # 選單內容
-    state="readonly",  # 不允許輸入
-    font=FONT
-)
-combo_teacher.pack(pady=5)
+    refresh_borrow_list()
+    messagebox.showinfo("續借完成", f"{teacher} 已續借 45 分鐘")
 
-# 平板數量標籤
-tk.Label(root, text="借用平板台數：", font=FONT).pack(pady=5)
+# =====================
+# 歸還 + 簽名
+# =====================
+def return_with_sign(row):
+    win = tk.Toplevel(root)
+    win.title("歸還簽名")
+    win.geometry("300x180")
+    win.configure(bg=BG)
 
-# 平板數量輸入框
-entry_count = tk.Entry(root, font=FONT)
-entry_count.pack(pady=5)
+    tk.Label(win, text="請輸入簽名", bg=BG, font=FONT).pack(pady=10)
+    entry = tk.Entry(win, font=FONT)
+    entry.pack()
 
-# 送出按鈕
+    def confirm():
+        if entry.get().strip() == "":
+            messagebox.showwarning("錯誤", "必須簽名")
+            return
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sheet.update_cell(row, 5, now)
+        sheet.update_cell(row, 6, entry.get())
+        win.destroy()
+        refresh_borrow_list()
+
+    tk.Button(
+        win, text="確認歸還",
+        bg=BTN, fg="white", font=FONT,
+        command=confirm
+    ).pack(pady=15)
+
+# =====================
+# UI
+# =====================
+root = tk.Tk()
+root.title("平板借用系統")
+root.geometry("460x600")
+root.configure(bg=BG)
+
+tk.Label(root, text="平板借用系統", font=FONT_TITLE, bg=BG).pack(pady=15)
+
+card1 = tk.Frame(root, bg=CARD, padx=20, pady=15)
+card1.pack(fill="x", padx=20)
+
+tk.Label(card1, text="借用人", bg=CARD).pack(anchor="w")
+combo_teacher = ttk.Combobox(card1, values=TEACHERS, state="readonly")
+combo_teacher.pack(fill="x", pady=5)
+
+tk.Label(card1, text="借用平板台數（1～50）", bg=CARD).pack(anchor="w")
+entry_count = tk.Entry(card1)
+entry_count.pack(fill="x", pady=5)
+
 tk.Button(
-    root,
-    text="送出借用",
-    font=FONT,
-    command=submit_data  # 按下後執行 submit_data
-).pack(pady=15)
+    card1, text="送出借用",
+    bg=BTN, fg="white",
+    command=submit_data
+).pack(pady=10)
 
-# 啟動主視窗迴圈
+card2 = tk.Frame(root, bg=CARD, padx=15, pady=10)
+card2.pack(fill="both", expand=True, padx=20, pady=15)
+
+tk.Label(card2, text="借用中紀錄", bg=CARD, font=("Arial", 13, "bold")).pack(anchor="w")
+borrow_frame = tk.Frame(card2, bg=CARD)
+borrow_frame.pack(fill="both", expand=True)
+
+refresh_borrow_list()
 root.mainloop()
