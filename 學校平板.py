@@ -1,13 +1,24 @@
+# =========================
+# 蘭州國中 平板借用系統
+# 完整 400+ 行版本（部分歸還更新剩餘台數、全數歸還刪除紀錄）
+# =========================
+
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk, messagebox
 from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
+import re
 
 # =========================
-# 字體與顏色設定
+# 基本設定
 # =========================
+APP_TITLE = "蘭州國中114學年度 第1學期 平板借用系統"
+TOTAL_TABLETS = 101
+MAX_SINGLE_BORROW = 50
+MAX_BORROW_RECORDS = 7  # 借用列表最多 7 筆
+
 FONT_TITLE = ("Arial", 20, "bold")
 FONT_HEADER = ("Arial", 16, "bold")
 FONT = ("Arial", 16)
@@ -15,14 +26,19 @@ FONT = ("Arial", 16)
 BG_COLOR = "#F4F6F8"
 CARD_COLOR = "#FFFFFF"
 
-TOTAL_TABLETS = 101
-MAX_SINGLE_BORROW = 50
-ALL_TABLETS = [f"Lcjh-{i:02d}" for i in range(TOTAL_TABLETS)]
-
+# =========================
+# 教師與班級資料
+# =========================
 TEACHERS = [
     "本孚","幃捷","舒婷","珊瑩","郁均","李安","佳佳","孟璇","婉湄","逸銓",
     "惠如","百育","峻維","品妤","彥宏","勇宏","盈盈","斐雁","淨瑜","俊萱",
     "裕貞","慧娟","晉邦","迪文"
+]
+
+CLASSES = [
+    "701","702","703","704","705",
+    "801","802","803","804",
+    "901","902","903"
 ]
 
 # =========================
@@ -34,381 +50,350 @@ def connect_google_sheet():
         "https://www.googleapis.com/auth/drive"
     ]
     base = os.path.dirname(os.path.abspath(__file__))
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        os.path.join(base, "service_account.json"), scope
-    )
-    return gspread.authorize(creds).open("ipadinnout").sheet1
+    creds_path = os.path.join(base, "service_account.json")
+    creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
+    client = gspread.authorize(creds)
+    return client.open("ipadinnout").sheet1
 
 sheet = connect_google_sheet()
-
-# =========================
-# 左上角時間
-# =========================
-def update_time():
-    time_label.config(text=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    root.after(1000, update_time)
-
-# =========================
-# 問題平板當天防呆
-# =========================
-def is_broken_today(code):
-    today = datetime.now().strftime("%Y-%m-%d")
-    for r in sheet.get_all_values()[1:]:
-        if r[0] == "問題平板" and r[6] == code and r[2][:10] == today:
-            return True
-    return False
-
-# =========================
-# 計算借用中剩餘台數
-# =========================
-def get_remaining_tablets():
-    records = sheet.get_all_values()[1:]
-    borrowed = sum(int(r[1]) for r in records if r[0] != "問題平板" and r[4] == "")
-    broken = sum(1 for r in records if r[0] == "問題平板")
-    return TOTAL_TABLETS - borrowed - broken
-
-# =========================
-# 檢查是否已借用中
-# =========================
-def has_active_borrow(teacher):
-    records = sheet.get_all_values()[1:]
-    for r in records:
-        if r[0] == teacher and r[4] == "":
-            return True
-    return False
-
-# =========================
-# 刷新借用中紀錄表格
-# =========================
-def refresh_borrow_table():
-    for row in borrow_table.get_children():
-        borrow_table.delete(row)
-
-    records = sheet.get_all_values()[1:]
-    for idx, row in enumerate(records, start=2):
-        if row[0] != "問題平板" and row[4] == "":
-            try:
-                end_time = datetime.strptime(row[3], "%Y-%m-%d %H:%M:%S")
-                remaining_minutes = (end_time - datetime.now()).total_seconds() / 60
-                if remaining_minutes <= 5:
-                    messagebox.showwarning("警告", f"{row[0]} 借用平板即將逾時，剩餘 {int(remaining_minutes)} 分鐘")
-                is_overdue = datetime.now() > end_time
-            except:
-                is_overdue = False
-
-            remaining = get_remaining_tablets()
-            borrow_table.insert(
-                "", "end", iid=str(idx),
-                values=(row[0], row[1], TOTAL_TABLETS, remaining, row[3]),
-                tags=("overdue",) if is_overdue else ()
-            )
-
-    borrow_table.tag_configure("overdue", foreground="red")
-
-# =========================
-# 借用
-# =========================
-def submit_borrow():
-    teacher = teacher_combobox.get().strip()
-    count = count_entry.get().strip()
-
-    if not teacher or not count:
-        messagebox.showerror("錯誤", "請填寫借用人與台數")
-        return
-    if has_active_borrow(teacher):
-        messagebox.showerror("錯誤", f"{teacher} 尚有借用中平板，不能再借")
-        return
-    if not count.isdigit() or not (1 <= int(count) <= min(get_remaining_tablets(), MAX_SINGLE_BORROW)):
-        messagebox.showerror("錯誤", f"台數必須為 1~{MAX_SINGLE_BORROW}")
-        return
-
-    start = datetime.now()
-    end = start + timedelta(minutes=45)
-
-    sheet.append_row([
-        teacher, count,
-        start.strftime("%Y-%m-%d %H:%M:%S"),
-        end.strftime("%Y-%m-%d %H:%M:%S"),
-        "", "", ""
-    ])
-
-    count_entry.delete(0, tk.END)
-    refresh_borrow_table()
-    refresh_broken_list()
-
-# =========================
-# 歸還
-# =========================
-def return_tablet_dialog(row):
-    dialog = tk.Toplevel(root)
-    dialog.title("歸還平板")
-
-    borrow_count = int(sheet.cell(row, 2).value)
-
-    tk.Label(dialog, text="歸還台數:", font=FONT).pack(padx=10, pady=5)
-    return_count = tk.Entry(dialog, font=FONT)
-    return_count.insert(0, str(borrow_count))
-    return_count.pack(padx=10, pady=5)
-
-    tk.Label(dialog, text="簽名:", font=FONT).pack(padx=10, pady=5)
-    signature = tk.Entry(dialog, font=FONT)
-    signature.pack(padx=10, pady=5)
-
-    def confirm_return():
-        val = return_count.get().strip()
-        if not val.isdigit():
-            messagebox.showerror("錯誤", "歸還台數必須是數字")
-            return
-
-        return_num = int(val)
-        if return_num < 1 or return_num > borrow_count:
-            messagebox.showerror("錯誤", f"歸還台數需介於 1~{borrow_count}")
-            return
-
-        remain = borrow_count - return_num
-        if remain == 0:
-            sheet.update_cell(row, 5, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        else:
-            sheet.update_cell(row, 2, str(remain))
-
-        dialog.destroy()
-        refresh_borrow_table()
-        refresh_broken_list()
-
-    tk.Button(dialog, text="確認歸還", font=FONT, command=confirm_return).pack(pady=10)
-
-# =========================
-# 續借
-# =========================
-def extend_borrow(row):
-    current_end = sheet.cell(row, 4).value
-    new_end = datetime.strptime(current_end, "%Y-%m-%d %H:%M:%S") + timedelta(minutes=45)
-    sheet.update_cell(row, 4, new_end.strftime("%Y-%m-%d %H:%M:%S"))
-    refresh_borrow_table()
-    refresh_broken_list()
-
-# =========================
-# 問題平板
-# =========================
-def submit_broken():
-    code = broken_entry.get().strip()
-    if not code:
-        return
-    if not code.startswith("Lcjh-") or not code[5:].isdigit():
-        messagebox.showerror("錯誤", "編號格式錯誤，請輸入 Lcjh-00 ~ Lcjh-102")
-        return
-    num = int(code[5:])
-    if not (0 <= num <= 102):
-        messagebox.showerror("錯誤", "編號超出範圍，請輸入 Lcjh-00 ~ Lcjh-102")
-        return
-    if is_broken_today(code):
-        messagebox.showerror("錯誤", "今天已填過此編號")
-        return
-
-    sheet.append_row([
-        "問題平板", 1,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "", "", "", code
-    ])
-
-    broken_entry.delete(0, tk.END)
-    refresh_borrow_table()
-    refresh_broken_list()
-
-def remove_broken(code):
-    pwd_dialog = tk.Toplevel(root)
-    pwd_dialog.title("輸入密碼")
-    tk.Label(pwd_dialog, text="請輸入密碼以消除問題平板", font=FONT).pack(padx=10, pady=10)
-    pwd_entry = tk.Entry(pwd_dialog, font=FONT, show="*")
-    pwd_entry.pack(padx=10, pady=5)
-
-    def confirm_pwd():
-        if pwd_entry.get() == "PASSWORD":
-            rows = sheet.get_all_values()
-            for i in range(1, len(rows)):
-                if rows[i][0] == "問題平板" and rows[i][6] == code:
-                    sheet.delete_rows(i + 1)
-                    break
-            pwd_dialog.destroy()
-            refresh_borrow_table()
-            refresh_broken_list()
-        else:
-            messagebox.showerror("錯誤", "密碼錯誤")
-            pwd_entry.delete(0, tk.END)
-
-    tk.Button(pwd_dialog, text="確認", font=FONT, command=confirm_pwd).pack(pady=10)
 
 # =========================
 # 主視窗
 # =========================
 root = tk.Tk()
-root.title("蘭州國中114學年度 第1學期 平板借用系統")
-root.state("zoomed")  # 全螢幕
+root.title(APP_TITLE)
+root.state("zoomed")
 
-# ===== Canvas 容器 =====
+# =========================
+# Canvas 可滾動
+# =========================
 canvas = tk.Canvas(root, bg=BG_COLOR)
 canvas.pack(side="left", fill="both", expand=True)
-
 scrollbar = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
 scrollbar.pack(side="right", fill="y")
 canvas.configure(yscrollcommand=scrollbar.set)
+content = tk.Frame(canvas, bg=BG_COLOR)
+canvas.create_window((0,0), window=content, anchor="nw")
 
-content_frame = tk.Frame(canvas, bg=BG_COLOR)
-canvas.create_window((0,0), window=content_frame, anchor="nw")
-
-def update_scrollregion(event):
+def on_configure(event):
     canvas.configure(scrollregion=canvas.bbox("all"))
     canvas.itemconfig("all", width=canvas.winfo_width())
 
-content_frame.bind("<Configure>", update_scrollregion)
-
-# 滑鼠滾輪支援
+content.bind("<Configure>", on_configure)
 def _on_mousewheel(event):
     canvas.yview_scroll(int(-1*(event.delta/120)), "units")
 canvas.bind_all("<MouseWheel>", _on_mousewheel)
-canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
-canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
 
-# ===== 上方標題列 =====
-top_bar = tk.Frame(content_frame, bg=BG_COLOR)
-top_bar.pack(fill="x", pady=5)
+# =========================
+# 時間顯示
+# =========================
+def update_time():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    time_label.config(text=now)
+    root.after(1000, update_time)
 
-time_label = tk.Label(top_bar, bg=BG_COLOR, fg="gray", font=("Arial", 14))
-time_label.pack(anchor="center", pady=(0,0))
-
-title_label = tk.Label(top_bar, text="蘭州國中114學年度 第1學期 平板借用系統",
-                       font=FONT_TITLE, bg=BG_COLOR)
-title_label.pack(anchor="center", pady=(5, 0))
-
-info_frame = tk.Frame(top_bar, bg=BG_COLOR)
-info_frame.pack(anchor="center", pady=(5,10))
-
-remaining_tablets = get_remaining_tablets()
-tk.Label(info_frame, text=f"總台數: {TOTAL_TABLETS}", font=FONT, bg=BG_COLOR).pack(side="left", padx=10)
-tk.Label(info_frame, text=f"剩餘可借: {remaining_tablets}", font=FONT, bg=BG_COLOR).pack(side="left", padx=10)
-
+# =========================
+# 標題區
+# =========================
+header = tk.Frame(content, bg=BG_COLOR)
+header.pack(fill="x", pady=10)
+time_label = tk.Label(header, font=("Arial", 14), fg="gray", bg=BG_COLOR)
+time_label.pack()
+title_label = tk.Label(header, text=APP_TITLE, font=FONT_TITLE, bg=BG_COLOR)
+title_label.pack(pady=(5,10))
 update_time()
 
-# ===== 借用卡片 =====
-card1 = tk.Frame(content_frame, bg=CARD_COLOR, padx=20, pady=15)
-card1.pack(fill="x", padx=20, pady=(20,10))
+# =========================
+# 工具函式
+# =========================
+def get_all_records():
+    return sheet.get_all_values()[1:]
 
-tk.Label(card1, text="借用人", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w")
-teacher_combobox = ttk.Combobox(card1, values=TEACHERS, font=FONT)
-teacher_combobox.pack(fill="x")
-
-tk.Label(card1, text="借用台數 (上限50台)", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w")
-count_entry = tk.Entry(card1, font=FONT)
-count_entry.pack(fill="x")
-
-tk.Button(card1, text="送出借用", font=FONT, command=submit_borrow).pack(pady=10)
-
-tk.Label(card1, text="問題平板編號", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w")
-broken_entry = tk.Entry(card1, font=FONT)
-broken_entry.pack(fill="x")
-tk.Button(card1, text="送出問題平板", font=FONT, command=submit_broken).pack(pady=5)
-
-# ===== 借用中紀錄表格 =====
-card2 = tk.Frame(content_frame, bg=CARD_COLOR, padx=15, pady=10)
-card2.pack(fill="both", expand=True, padx=20, pady=10)
-
-tk.Label(card2, text="借用中紀錄", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w")
-
-table_frame = tk.Frame(card2)
-table_frame.pack(fill="both", expand=True)
-
-borrow_table = ttk.Treeview(table_frame, columns=("borrower","count","total","remaining","end_time"),
-                            show="headings", height=10)
-borrow_table.pack(side="left", fill="both", expand=True)
-
-scrollbar_borrow = ttk.Scrollbar(table_frame, orient="vertical", command=borrow_table.yview)
-scrollbar_borrow.pack(side="right", fill="y")
-borrow_table.configure(yscrollcommand=scrollbar_borrow.set)
-
-borrow_table.heading("borrower", text="借用人")
-borrow_table.heading("count", text="借出台數")
-borrow_table.heading("total", text="總台數")
-borrow_table.heading("remaining", text="剩餘台數")
-borrow_table.heading("end_time", text="到期時間")
-
-borrow_table.column("borrower", width=150, anchor="center")
-borrow_table.column("count", width=80, anchor="center")
-borrow_table.column("total", width=80, anchor="center")
-borrow_table.column("remaining", width=80, anchor="center")
-borrow_table.column("end_time", width=150, anchor="center")
-
-button_frame = tk.Frame(card2, bg=CARD_COLOR)
-button_frame.pack(fill="x", pady=5)
-
-return_btn = tk.Button(button_frame, text="歸還", font=FONT, bg="#D9534F", fg="white")
-return_btn.pack(side="left", padx=5)
-
-extend_btn = tk.Button(button_frame, text="續借", font=FONT, bg="#5BC0DE", fg="white")
-extend_btn.pack(side="left", padx=5)
-
-def on_return():
-    selected = borrow_table.selection()
-    if selected:
-        return_tablet_dialog(int(selected[0]))
-
-def on_extend():
-    selected = borrow_table.selection()
-    if selected:
-        extend_borrow(int(selected[0]))
-
-return_btn.config(command=on_return)
-extend_btn.config(command=on_extend)
-
-def on_row_double_click(event):
-    selected = borrow_table.selection()
-    if selected:
-        dialog = tk.Toplevel(root)
-        dialog.title("操作選擇")
-        tk.Label(dialog, text="請選擇操作", font=FONT_HEADER).pack(padx=10, pady=10)
-        tk.Button(dialog, text="歸還", font=FONT, bg="#D9534F", fg="white",
-                  command=lambda: [return_tablet_dialog(int(selected[0])), dialog.destroy()]).pack(padx=10, pady=5, fill="x")
-        tk.Button(dialog, text="續借", font=FONT, bg="#5BC0DE", fg="white",
-                  command=lambda: [extend_borrow(int(selected[0])), dialog.destroy()]).pack(padx=10, pady=5, fill="x")
-
-borrow_table.bind("<Double-1>", on_row_double_click)
-
-refresh_borrow_table()
-
-# ===== 問題平板列表 =====
-card3 = tk.Frame(content_frame, bg=CARD_COLOR, padx=15, pady=10)
-card3.pack(fill="both", expand=True, padx=20, pady=10)
-
-tk.Label(card3, text="問題平板列表", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w")
-
-canvas_broken = tk.Canvas(card3, bg=CARD_COLOR)
-canvas_broken.pack(side="left", fill="both", expand=True)
-
-scrollbar_broken = ttk.Scrollbar(card3, orient="vertical", command=canvas_broken.yview)
-scrollbar_broken.pack(side="right", fill="y")
-
-canvas_broken.configure(yscrollcommand=scrollbar_broken.set)
-
-broken_list = tk.Frame(canvas_broken, bg=CARD_COLOR)
-canvas_broken.create_window((0,0), window=broken_list, anchor="nw")
-
-def update_broken_scrollregion(event):
-    canvas_broken.configure(scrollregion=canvas_broken.bbox("all"))
-
-broken_list.bind("<Configure>", update_broken_scrollregion)
-
-def refresh_broken_list():
-    for w in broken_list.winfo_children():
-        w.destroy()
-    rows = sheet.get_all_values()[1:]
-    for r in rows:
+def get_remaining_tablets():
+    records = get_all_records()
+    borrowed = 0
+    broken = 0
+    for r in records:
+        if len(r) < 3:
+            continue
         if r[0] == "問題平板":
-            row_frame = tk.Frame(broken_list, bg=CARD_COLOR)
-            row_frame.pack(fill="x", pady=2)
-            tk.Label(row_frame, text=r[6], font=FONT, bg=CARD_COLOR).pack(side="left", padx=5)
-            tk.Button(row_frame, text="消除", font=FONT,
-                      command=lambda code=r[6]: remove_broken(code)).pack(side="left", padx=5)
+            broken += 1
+        else:
+            try:
+                total_borrowed = int(r[2])
+                returned = int(r[8]) if len(r) > 8 and r[8].isdigit() else 0
+                borrowed += total_borrowed - returned
+            except:
+                continue
+    return max(TOTAL_TABLETS - borrowed - broken, 0)  # 不可為負
 
+def has_active_borrow(teacher):
+    for r in get_all_records():
+        if len(r) >= 3 and r[0] == teacher and (int(r[2]) - (int(r[8]) if len(r) > 8 and r[8].isdigit() else 0)) > 0:
+            return True
+    return False
+
+def borrow_records_count():
+    count = 0
+    for r in get_all_records():
+        if len(r) >= 3 and r[0] != "問題平板":
+            total_borrowed = int(r[2])
+            returned = int(r[8]) if len(r) > 8 and r[8].isdigit() else 0
+            if total_borrowed - returned > 0:
+                count += 1
+    return count
+
+# =========================
+# 借用卡片
+# =========================
+borrow_card = tk.Frame(content, bg=CARD_COLOR, padx=20, pady=15)
+borrow_card.pack(fill="x", padx=20, pady=10)
+tk.Label(borrow_card, text="借用人", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w")
+teacher_var = tk.StringVar()
+teacher_cb = ttk.Combobox(borrow_card, values=TEACHERS + ["其他"], state="readonly", font=FONT, textvariable=teacher_var)
+teacher_cb.pack(fill="x")
+other_teacher_entry = tk.Entry(borrow_card, font=FONT, state="disabled")
+other_teacher_entry.pack(fill="x", pady=5)
+def on_teacher_change(e=None):
+    if teacher_var.get() == "其他":
+        other_teacher_entry.config(state="normal")
+        other_teacher_entry.focus()
+    else:
+        other_teacher_entry.delete(0, tk.END)
+        other_teacher_entry.config(state="disabled")
+teacher_cb.bind("<<ComboboxSelected>>", on_teacher_change)
+
+tk.Label(borrow_card, text="班級", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w", pady=(10,0))
+class_var = tk.StringVar()
+class_cb = ttk.Combobox(borrow_card, values=CLASSES, state="readonly", font=FONT, textvariable=class_var)
+class_cb.pack(fill="x")
+tk.Label(borrow_card, text=f"借用台數（上限 {MAX_SINGLE_BORROW}）", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w", pady=(10,0))
+count_entry = tk.Entry(borrow_card, font=FONT)
+count_entry.pack(fill="x")
+remaining_label = tk.Label(borrow_card, text=f"目前剩餘台數：{get_remaining_tablets()}", font=FONT, bg=CARD_COLOR, fg="blue")
+remaining_label.pack(anchor="e", pady=5)
+
+# =========================
+# 借用送出
+# =========================
+def submit_borrow():
+    if borrow_records_count() >= MAX_BORROW_RECORDS:
+        messagebox.showerror("錯誤", f"借用資料筆數不可超過 {MAX_BORROW_RECORDS} 筆")
+        return
+    teacher = teacher_var.get()
+    if teacher == "其他":
+        teacher = other_teacher_entry.get().strip()
+    classroom = class_var.get()
+    count = count_entry.get().strip()
+    if not teacher or not classroom:
+        messagebox.showerror("錯誤", "借用人與班級不可空白")
+        return
+    if has_active_borrow(teacher):
+        messagebox.showerror("錯誤", "此借用人尚有未歸還紀錄")
+        return
+    if not count.isdigit():
+        messagebox.showerror("錯誤", "台數必須為數字")
+        return
+    count = int(count)
+    if count < 1 or count > MAX_SINGLE_BORROW:
+        messagebox.showerror("錯誤", "單次借用台數超過限制")
+        return
+    remaining = get_remaining_tablets()
+    if count > remaining:
+        messagebox.showerror("錯誤", f"班級剩餘可借台數不足（剩餘 {remaining} 台）")
+        return
+    start = datetime.now()
+    end = start + timedelta(minutes=45)
+    sheet.append_row([
+        teacher, classroom, count,
+        start.strftime("%Y-%m-%d %H:%M:%S"), "",  # 歸還時間
+        end.strftime("%Y-%m-%d %H:%M:%S"), "",  # 簽名, 實際歸還
+    ])
+    count_entry.delete(0, tk.END)
+    refresh_borrow_table()
+    refresh_problem_table()
+
+tk.Button(borrow_card, text="送出借用", font=FONT, command=submit_borrow).pack(pady=10)
+tk.Button(borrow_card, text="刷新借用列表", font=FONT, command=lambda: refresh_borrow_table()).pack(pady=5)
+root.bind("<Return>", lambda e: submit_borrow())
+
+# =========================
+# 借用中表格
+# =========================
+borrow_card2 = tk.Frame(content, bg=CARD_COLOR, padx=15, pady=10)
+borrow_card2.pack(fill="both", expand=True, padx=20, pady=10)
+borrow_table = ttk.Treeview(
+    borrow_card2, columns=("teacher","class","borrowed","remain","end"), show="headings", height=10
+)
+borrow_table.pack(fill="both", expand=True)
+for col, txt in zip(
+    ("teacher","class","borrowed","remain","end"),
+    ("借用人","班級","借出台數","未歸還","到期時間")
+):
+    borrow_table.heading(col, text=txt)
+
+def refresh_borrow_table():
+    borrow_table.delete(*borrow_table.get_children())
+    now = datetime.now()
+    for idx, r in enumerate(get_all_records(), start=2):
+        if len(r) < 3 or r[0] == "問題平板":
+            continue
+        try:
+            borrowed = int(r[2])
+            returned = int(r[8]) if len(r) > 8 and r[8].isdigit() else 0
+            remain = borrowed - returned
+            if remain <= 0:
+                continue  # 全數歸還，不顯示
+            end_time = datetime.strptime(r[5], "%Y-%m-%d %H:%M:%S")
+            item_id = str(idx)
+            borrow_table.insert("", "end", iid=item_id, values=(r[0], r[1], borrowed, remain, r[5]))
+            if now >= end_time:
+                borrow_table.item(item_id, tags=("overdue",))
+        except:
+            continue
+    borrow_table.tag_configure("overdue", background="#FFCCCC")
+    remaining_label.config(text=f"目前剩餘台數：{get_remaining_tablets()}")
+
+# =========================
+# 歸還彈窗（部分歸還會扣除剩餘台數）
+# =========================
+def return_selected():
+    item = borrow_table.focus()
+    if not item:
+        return
+    row = int(item)
+    orig_count = int(sheet.cell(row, 3).value)
+
+    popup = tk.Toplevel(root)
+    popup.title("歸還平板")
+    popup.geometry("300x250")
+    popup.grab_set()
+
+    tk.Label(popup, text=f"原借用台數：{orig_count}", font=FONT).pack(pady=5)
+    tk.Label(popup, text="實際歸還台數：", font=FONT).pack(pady=5)
+    actual_var = tk.StringVar(value=str(orig_count))
+    actual_entry = tk.Entry(popup, textvariable=actual_var, font=FONT)
+    actual_entry.pack()
+    tk.Label(popup, text="簽名：", font=FONT).pack(pady=5)
+    sign_var = tk.StringVar()
+    sign_entry = tk.Entry(popup, textvariable=sign_var, font=FONT)
+    sign_entry.pack()
+
+    def confirm_return():
+        actual = actual_var.get().strip()
+        sign = sign_var.get().strip()
+        if not actual.isdigit() or int(actual) < 1:
+            messagebox.showerror("錯誤", "歸還台數必須為正整數")
+            return
+        if not sign:
+            messagebox.showerror("錯誤", "簽名不可空白")
+            return
+
+        actual_int = int(actual)
+        already_returned = int(sheet.cell(row, 8).value or 0)
+
+        # 更新簽名與歸還時間
+        sheet.update_cell(row, 7, sign)
+        sheet.update_cell(row, 5, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        remaining = orig_count - (already_returned + actual_int)
+        if remaining > 0:
+            # 部分歸還 → 更新已歸還欄位
+            sheet.update_cell(row, 8, already_returned + actual_int)
+        else:
+            # 全數歸還 → 刪除該筆借用紀錄
+            sheet.delete_rows(row)
+
+        refresh_borrow_table()
+        popup.destroy()
+
+    tk.Button(popup, text="確認歸還", font=FONT, command=confirm_return).pack(pady=10)
+
+# =========================
+# 續借功能
+# =========================
+def extend_selected():
+    item = borrow_table.focus()
+    if not item:
+        return
+    row = int(item)
+    old_end = sheet.cell(row, 6).value
+    new_end = datetime.strptime(old_end, "%Y-%m-%d %H:%M:%S") + timedelta(minutes=45)
+    sheet.update_cell(row, 6, new_end.strftime("%Y-%m-%d %H:%M:%S"))
+    refresh_borrow_table()
+
+btn_frame = tk.Frame(borrow_card2, bg=CARD_COLOR)
+btn_frame.pack(pady=5)
+tk.Button(btn_frame, text="歸還", font=FONT, command=return_selected).pack(side="left", padx=5)
+tk.Button(btn_frame, text="續借", font=FONT, command=extend_selected).pack(side="left", padx=5)
+
+# =========================
+# 問題平板登記
+# =========================
+problem_card = tk.Frame(content, bg=CARD_COLOR, padx=20, pady=15)
+problem_card.pack(fill="x", padx=20, pady=10)
+tk.Label(problem_card, text="問題平板（Lcjh-00 ~ Lcjh-100）", font=FONT_HEADER, bg=CARD_COLOR).pack(anchor="w")
+problem_entry = tk.Entry(problem_card, font=FONT)
+problem_entry.pack(fill="x", pady=5)
+
+def submit_problem():
+    code = problem_entry.get().strip()
+    match = re.fullmatch(r"Lcjh-(\d{1,3})", code)
+    if not match:
+        messagebox.showerror("錯誤", "請輸入正確格式 Lcjh-xx（00~100）")
+        return
+    number = int(match.group(1))
+    if number < 0 or number > 100:
+        messagebox.showerror("錯誤", "平板編號必須介於 00~100")
+        return
+    records = get_all_records()
+    if any(len(r)>6 and r[0]=="問題平板" and r[6]==code for r in records):
+        messagebox.showerror("錯誤", "此平板已登記")
+        return
+    sheet.append_row(["問題平板", "", "", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "", "", code, ""])
+    problem_entry.delete(0, tk.END)
+    refresh_problem_table()
+    refresh_borrow_table()
+
+tk.Button(problem_card, text="登記問題平板", font=FONT, command=submit_problem).pack(pady=5)
+problem_table = ttk.Treeview(problem_card, columns=("code","time"), show="headings", height=5)
+problem_table.pack(fill="x")
+problem_table.heading("code", text="平板編號")
+problem_table.heading("time", text="時間")
+def remove_problem():
+    item = problem_table.focus()
+    if not item:
+        return
+    row = int(item)
+    sheet.delete_rows(row)
+    refresh_problem_table()
+    refresh_borrow_table()
+tk.Button(problem_card, text="消除問題平板", font=FONT, command=remove_problem).pack(pady=5)
+def refresh_problem_table():
+    problem_table.delete(*problem_table.get_children())
+    for idx, r in enumerate(get_all_records(), start=2):
+        if len(r) > 6 and r[0] == "問題平板":
+            problem_table.insert("", "end", iid=str(idx), values=(r[6], r[3]))
+
+# =========================
+# 借用到期提醒
+# =========================
+def check_overdue():
+    now = datetime.now()
+    for idx, r in enumerate(get_all_records(), start=2):
+        if len(r) < 6 or r[0] == "問題平板":
+            continue
+        returned = int(r[8]) if len(r) > 8 and r[8].isdigit() else 0
+        if returned < int(r[2]):
+            end_time = datetime.strptime(r[5], "%Y-%m-%d %H:%M:%S")
+            if now >= end_time:
+                messagebox.showwarning(
+                    "借用到期提醒",
+                    f"借用人：{r[0]}\n班級：{r[1]}\n台數：{r[2]}\n借用已到期！"
+                )
+    root.after(60000, check_overdue)
+
+check_overdue()
 refresh_borrow_table()
-refresh_broken_list()
-
+refresh_problem_table()
 root.mainloop()
