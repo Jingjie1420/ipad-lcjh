@@ -10,8 +10,8 @@ import os
 # 基本設定
 # =========================
 APP_TITLE = (
-    "蘭州國中114學年度 第1學期 平板借用系統\n"
-    "Lanzhou Junior High School 114th Academic Year Semester 1: Tablet Borrowing System"
+    "蘭州國中114學年度 第2學期 平板借用系統\n"
+    "Lanzhou Junior High School 114th Academic Year Semester 2: Tablet Borrowing System"
 )
 
 ADMIN_PASSWORD = "1234"  # 管理員密碼
