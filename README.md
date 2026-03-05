@@ -1,3 +1,2 @@
-
-LKJHGT# ipad-lcjh
+# ipad-lcjh
 
