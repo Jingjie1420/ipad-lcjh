@@ -1,4 +1,4 @@
-import re
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime, timedelta, time
@@ -74,15 +74,27 @@ current_lang = "zh"
 def connect_to_google_sheets():
     try:
         scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        current_path = os.path.dirname(os.path.abspath(__file__))
+        
+        # ==========================================================
+        # 💡 終極打包魔法：尋找 PyInstaller 的神祕暫存資料夾 (_MEIPASS)
+        # ==========================================================
+        if getattr(sys, 'frozen', False):
+            # 當被打包成單一 exe 時，讀取 PyInstaller 解壓縮資源的暫存目錄
+            current_path = sys._MEIPASS
+        else:
+            # 開發模式下，讀取 py 檔所在的目錄
+            current_path = os.path.dirname(os.path.abspath(__file__))
+            
         json_file = os.path.join(current_path, "service_account.json")
+        # ==========================================================
+
         creds = ServiceAccountCredentials.from_json_keyfile_name(json_file, scopes)
         client = gspread.authorize(creds)
         book = client.open("ipadinnout")
         return book.worksheet("借用平板"), book.worksheet("問題平板")
     except Exception as e:
         messagebox.showerror("連線失敗", f"系統無法同步雲端數據：\n{e}")
-        exit()
+        sys.exit()
 
 ws_borrow, ws_fault = connect_to_google_sheets()
 
