@@ -24,14 +24,15 @@ OFFLINE_DATA_FILE = os.path.join(BASE_DIR, "offline_data.json")
 OFFLINE_PROB_FILE = os.path.join(BASE_DIR, "offline_problems.json")
 SYSTEM_LOG_FILE = os.path.join(BASE_DIR, "system_log.txt")
 
-# 字體與顏色設定
+# 字體與顏色設定 (恢復原本標準格式)
 FONT_TITLE = ("標楷體", 24, "bold")
 FONT_HEADER = ("標楷體", 20, "bold")
 FONT = ("標楷體", 18)
-FONT_SMALL = ("標楷體", 14)
 
 BG_COLOR = "#F4F6F8"
 CARD_COLOR = "#FFFFE0"
+
+# 按鈕顏色 (恢復傳統簡潔風格)
 BTN_SUCCESS_COLOR = "#4CAF50"
 BTN_INFO_COLOR = "#2196F3"
 BTN_WARNING_COLOR = "#FF9800"
@@ -47,10 +48,10 @@ CLASSES = ["701","702","703","704","705","801","802","803","804","901","902","90
 
 
 # ==========================================
-# 2. 本地操作日誌系統 (Offline Logging)
+# 2. 本地操作日誌系統 (背景執行，不影響介面)
 # ==========================================
 def write_log(action, detail):
-    """ 將所有的操作記錄寫入本地 txt 檔案，方便斷網時追蹤 """
+    """ 將操作記錄寫入本地 txt 檔案，作為系統備查 """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_message = f"[{now_str}] 【{action}】 {detail}\n"
     try:
@@ -61,10 +62,10 @@ def write_log(action, detail):
 
 
 # ==========================================
-# 3. 本地資料管理庫 (100% 離線運行)
+# 3. 本地資料管理庫 (確保介面不斷線)
 # ==========================================
 def load_json(filepath):
-    """ 安全地讀取本地 JSON 檔案 """
+    """ 讀取本地 JSON 檔案 """
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
@@ -75,18 +76,18 @@ def load_json(filepath):
     return []
 
 def save_json(filepath, data):
-    """ 安全地寫入本地 JSON 檔案 """
+    """ 寫入本地 JSON 檔案 """
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
         return True
     except Exception as e:
         write_log("系統錯誤", f"寫入 {filepath} 失敗: {e}")
-        messagebox.showerror("本機存檔失敗", f"無法寫入檔案：{e}")
+        messagebox.showerror("存檔失敗", f"無法寫入本機檔案：{e}")
         return False
 
 def get_available_codes():
-    """ 根據本地借用資料與報修資料，計算還剩哪些編號 """
+    """ 根據本地借用資料與報修資料，計算剩餘編號 """
     all_codes = {f"Lcjh-{i:02}" for i in range(1, TOTAL_TABLETS + 1)}
     
     # 計算已被借出且未歸還的
@@ -108,10 +109,10 @@ def get_available_codes():
 
 
 # ==========================================
-# 4. 雲端同步系統 (防護罩全面啟用)
+# 4. 雲端同步系統 (攔截所有連線錯誤)
 # ==========================================
 def connect_google_sheets():
-    """ 建立 Google Sheets 連線 (只有同步時才會呼叫) """
+    """ 建立 Google Sheets 連線 """
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_path = os.path.join(BASE_DIR, "service_account.json")
     creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
@@ -121,17 +122,17 @@ def connect_google_sheets():
     return s_borrow, s_prob
 
 def sync_to_cloud(is_auto=False):
-    """ 執行同步作業，包含完整的網路異常攔截機制 """
+    """ 執行同步作業，攔截錯誤不讓介面崩潰 """
     borrow_data = load_json(OFFLINE_DATA_FILE)
     prob_data = load_json(OFFLINE_PROB_FILE)
     
     if not borrow_data and not prob_data:
         if not is_auto:
-            messagebox.showinfo("同步", "目前本機沒有需要上傳的資料。")
+            messagebox.showinfo("同步資訊", "目前無資料需要同步。")
         return
 
     if not is_auto:
-        status_label.config(text="⏳ 正在嘗試連線雲端並上傳資料...", fg="orange")
+        status_label.config(text="系統狀態：正在連線並同步資料...", fg="orange")
         root.update()
 
     try:
@@ -150,32 +151,30 @@ def sync_to_cloud(is_auto=False):
             if os.path.exists(OFFLINE_PROB_FILE): 
                 os.remove(OFFLINE_PROB_FILE)
             
-        msg = f"同步成功！\n上傳了 {len(borrow_data)} 筆借用紀錄\n上傳了 {len(prob_data)} 筆報修紀錄"
+        msg = f"資料同步成功\n上傳借用紀錄：{len(borrow_data)} 筆\n上傳報修紀錄：{len(prob_data)} 筆"
         write_log("同步成功", msg.replace('\n', ', '))
         
         if not is_auto:
             messagebox.showinfo("同步成功", msg)
-        status_label.config(text="🟢 同步完成，目前為最新狀態", fg="green")
+        status_label.config(text="系統狀態：同步完成", fg="green")
         refresh_borrow_table()
         
     except Exception as e:
-        # 【關鍵防護】攔截所有 HTTPSConnectionPool 錯誤，不讓系統崩潰
         write_log("同步失敗", f"網路連線異常: {e}")
-        status_label.config(text="🔴 離線模式 (資料安全存於本機)", fg="red")
+        status_label.config(text="系統狀態：無法連線，目前為本機離線模式", fg="red")
         if not is_auto:
             messagebox.showwarning(
                 "網路連線失敗", 
-                "目前無法連線到 Google 伺服器 (可能是沒有網路)。\n\n"
-                "請放心，您的資料已安全保存在本機，\n"
-                "待網路恢復或今晚 18:00 系統會再次嘗試自動同步。"
+                "目前無法連線至雲端伺服器。\n"
+                "資料已安全存放於本機，待網路恢復後或於 18:00 自動同步。"
             )
 
 
 # ==========================================
-# 5. UI 介面初始化與主視窗
+# 5. 主視窗與介面框架設定
 # ==========================================
 root = tk.Tk()
-root.title("蘭州國中平板借用系統 (終極離線版)")
+root.title("平板借用系統")
 root.state("zoomed")
 root.configure(bg=BG_COLOR)
 
@@ -215,12 +214,12 @@ title_label.pack(pady=10)
 
 
 # ==========================================
-# 6. 借用登記區 (完全離線運作)
+# 6. 借用登記區 (恢復原始格式)
 # ==========================================
 borrow_frame = tk.Frame(content, bg=CARD_COLOR, padx=30, pady=25, relief="groove", bd=2)
 borrow_frame.pack(fill="x", padx=80, pady=15)
 
-borrow_title = tk.Label(borrow_frame, text="📝 借用登記 (本地防護罩啟用中)", font=FONT_HEADER, bg=CARD_COLOR)
+borrow_title = tk.Label(borrow_frame, text="借用登記", font=FONT_HEADER, bg=CARD_COLOR)
 borrow_title.grid(row=0, column=0, columnspan=2, pady=15)
 
 # 教師選擇
@@ -260,7 +259,8 @@ info_label.grid(row=5, column=0, columnspan=2, pady=10)
 def submit_borrow():
     pwd = simpledialog.askstring("權限驗證", "請輸入管理員密碼：", show='*')
     if pwd != ADMIN_PASSWORD:
-        if pwd is not None: messagebox.showerror("錯誤", "密碼不正確！")
+        if pwd is not None: 
+            messagebox.showerror("錯誤", "密碼不正確！")
         return
         
     t = other_teacher_entry.get().strip() if teacher_var.get() == "其他" else teacher_var.get()
@@ -282,7 +282,6 @@ def submit_borrow():
     now = datetime.now()
     due = now + timedelta(minutes=55)
     
-    # 格式比照試算表
     row = [t, c, n, now.strftime("%Y-%m-%d %H:%M:%S"), "", due.strftime("%Y-%m-%d %H:%M:%S"), "", ",".join(assigned), n]
     
     data = load_json(OFFLINE_DATA_FILE)
@@ -290,7 +289,7 @@ def submit_borrow():
     
     if save_json(OFFLINE_DATA_FILE, data):
         write_log("借用成功", f"教師:{t}, 班級:{c}, 台數:{n}, 分配:{','.join(assigned)}")
-        messagebox.showinfo("成功", f"借用已記錄於本機！\n分配編號：{row[7]}\n將於 18:00 自動上傳。")
+        messagebox.showinfo("登記成功", f"借用已記錄！\n分配編號：{row[7]}\n(資料已暫存，稍後自動同步)")
         
         teacher_var.set("")
         class_var.set("")
@@ -302,12 +301,12 @@ submit_btn.grid(row=6, column=0, columnspan=2, pady=20)
 
 
 # ==========================================
-# 7. 當前借用清單表格 (完全離線運作)
+# 7. 當前借用清單表格 (恢復原始格式)
 # ==========================================
 status_frame = tk.Frame(content, bg=BG_COLOR)
 status_frame.pack(fill="both", expand=True, padx=80, pady=15)
 
-tk.Label(status_frame, text="📊 本日本機借用清單", font=FONT_HEADER, bg=BG_COLOR).pack(anchor="w", pady=5)
+tk.Label(status_frame, text="當前借用清單", font=FONT_HEADER, bg=BG_COLOR).pack(anchor="w", pady=5)
 
 tree_columns = ("teacher", "class", "count", "due_time")
 tree = ttk.Treeview(status_frame, columns=tree_columns, show="headings", height=10)
@@ -319,7 +318,6 @@ tree.heading("due_time", text="應歸還時間"); tree.column("due_time", anchor
 tree.pack(fill="both", expand=True, pady=5)
 
 def refresh_borrow_table():
-    """ 更新表格資料與剩餘台數 (全本地計算) """
     for item in tree.get_children(): 
         tree.delete(item)
         
@@ -336,11 +334,11 @@ def refresh_borrow_table():
             
     tree.tag_configure("overdue", foreground="red")
     avail = len(get_available_codes())
-    info_label.config(text=f"🟢 目前本機推算剩餘可用台數：{avail} 台")
+    info_label.config(text=f"剩餘可用台數：{avail} 台")
 
 
 # ==========================================
-# 8. 功能按鈕區 (歸還、同步與說明)
+# 8. 功能按鈕區 (恢復原始格式)
 # ==========================================
 btn_group = tk.Frame(content, bg=BG_COLOR)
 btn_group.pack(pady=15)
@@ -348,9 +346,9 @@ btn_group.pack(pady=15)
 def return_tablet():
     selected = tree.selection()
     if not selected: 
-        return messagebox.showwarning("提醒", "請先在下方表格選擇要歸還的紀錄。")
+        return messagebox.showwarning("提醒", "請先在清單中選擇要歸還的紀錄。")
     
-    pwd = simpledialog.askstring("驗證", "請輸入管理員密碼：", show='*')
+    pwd = simpledialog.askstring("權限驗證", "請輸入管理員密碼：", show='*')
     if pwd != ADMIN_PASSWORD: 
         return
     
@@ -362,35 +360,23 @@ def return_tablet():
             r[4] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             save_json(OFFLINE_DATA_FILE, data)
             write_log("歸還成功", f"教師:{r[0]}, 班級:{r[1]}, 台數:{r[2]}")
-            messagebox.showinfo("成功", "本機歸還登記成功！")
+            messagebox.showinfo("成功", "歸還登記成功！")
             refresh_borrow_table()
             return
             
     messagebox.showerror("錯誤", "找不到對應的未歸還紀錄。")
 
-def show_system_info():
-    """ 顯示系統操作說明的輔助視窗 """
-    info_text = (
-        "【系統操作須知】\n\n"
-        "1. 斷網保護：白天借用、歸還、報修皆存於本機，不受網路影響。\n"
-        "2. 自動同步：每日 18:00 系統會在背景自動連網上傳資料。\n"
-        "3. 手動同步：若有需要，可隨時點擊「手動同步」按鈕。\n"
-        "4. 操作日誌：所有動作皆已記錄於 system_log.txt 以供備查。"
-    )
-    messagebox.showinfo("系統資訊", info_text)
-
-tk.Button(btn_group, text="✅ 選中歸還", font=FONT, bg=BTN_INFO_COLOR, fg="white", command=return_tablet, padx=15).pack(side="left", padx=15)
-tk.Button(btn_group, text="☁️ 手動同步至雲端", font=FONT, bg=BTN_WARNING_COLOR, fg="white", command=lambda: sync_to_cloud(is_auto=False), padx=15).pack(side="left", padx=15)
-tk.Button(btn_group, text="ℹ️ 系統說明", font=FONT, command=show_system_info, padx=15).pack(side="left", padx=15)
+tk.Button(btn_group, text="選中歸還", font=FONT, bg=BTN_INFO_COLOR, fg="white", command=return_tablet, padx=15).pack(side="left", padx=15)
+tk.Button(btn_group, text="手動同步至雲端", font=FONT, bg=BTN_WARNING_COLOR, fg="white", command=lambda: sync_to_cloud(is_auto=False), padx=15).pack(side="left", padx=15)
 
 
 # ==========================================
-# 9. 問題平板報修區 (完全離線運作)
+# 9. 問題平板報修區 (恢復原始格式)
 # ==========================================
 repair_frame = tk.Frame(content, bg="#FFEBEE", padx=30, pady=25, relief="groove", bd=2)
 repair_frame.pack(fill="x", padx=80, pady=25)
 
-tk.Label(repair_frame, text="⚠️ 問題平板登記", font=FONT_HEADER, bg="#FFEBEE", fg="#B71C1C").pack(pady=5)
+tk.Label(repair_frame, text="問題平板登記", font=FONT_HEADER, bg="#FFEBEE", fg="#B71C1C").pack(pady=5)
 repair_input_frame = tk.Frame(repair_frame, bg="#FFEBEE")
 repair_input_frame.pack(pady=10)
 
@@ -403,7 +389,7 @@ def submit_repair():
     if not code: 
         return messagebox.showwarning("提醒", "請輸入編號")
     
-    pwd = simpledialog.askstring("驗證", "請輸入管理員密碼：", show='*')
+    pwd = simpledialog.askstring("權限驗證", "請輸入管理員密碼：", show='*')
     if pwd != ADMIN_PASSWORD: 
         return
     
@@ -412,9 +398,9 @@ def submit_repair():
     
     if save_json(OFFLINE_PROB_FILE, prob_data):
         write_log("報修登記", f"故障編號: {code}")
-        messagebox.showinfo("報修成功", f"已將 {code} 記錄於本機，將於下次同步時上傳。")
+        messagebox.showinfo("報修成功", f"已記錄平板 {code} 的報修狀態。")
         repair_entry.delete(0, tk.END)
-        refresh_borrow_table() # 刷新可用台數
+        refresh_borrow_table()
 
 tk.Button(repair_frame, text="登記報修", font=FONT, bg=BTN_DANGER_COLOR, fg="white", command=submit_repair, padx=20).pack(pady=10)
 
@@ -422,13 +408,11 @@ tk.Button(repair_frame, text="登記報修", font=FONT, bg=BTN_DANGER_COLOR, fg=
 # ==========================================
 # 10. 底部狀態列與啟動
 # ==========================================
-status_label = tk.Label(root, text="系統已就緒 (本地防護模式運行中)", bd=1, relief="sunken", anchor="w", font=("Arial", 12), bg="#E0E0E0")
+status_label = tk.Label(root, text="系統狀態：已就緒", bd=1, relief="sunken", anchor="w", font=("Arial", 12), bg="#E0E0E0")
 status_label.pack(side="bottom", fill="x")
 
-# 初始化時寫入啟動日誌
-write_log("系統啟動", "程式已開啟，進入本地防護模式")
+write_log("系統啟動", "程式啟動")
 
-# 啟動時鐘與更新表格
 update_time()
 refresh_borrow_table()
 root.mainloop()
