@@ -1,6 +1,9 @@
 import os
 import sys
 import traceback
+import json
+import threading
+import time as pytime
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime, timedelta, time
@@ -21,11 +24,12 @@ except Exception:
 # =============================================================================
 # 1. 系統參數與全域樣式定義 (System Parameters & Global Aesthetics)
 # =============================================================================
-APP_VERSION = "v5.6.1 - 2026 Stable Release (Final)"
+APP_VERSION = "v6.1.0 - 2026 Offline-Ready & Time-Safe Edition"
 APP_TITLE_ZH = "蘭州國中 114學年度 第2學期平板借用系統"
 APP_TITLE_EN = "LZJH Tablet Loan System (Semester 2, 2025-2026)"
 
-# 💡 全面升級為現代化無襯線字體 (微軟正黑體)
+LOCAL_DB_FILE = "tablet_data_local.json" # 本地資料庫檔案名稱
+
 FONT_KAI_TITLE  = ("Microsoft JhengHei", 32, "bold")
 FONT_KAI_SUB    = ("Microsoft JhengHei", 16)
 FONT_KAI_CARD   = ("Microsoft JhengHei", 22, "bold")
@@ -43,6 +47,12 @@ SCHOOL_PERIODS = {
     "第6節 (P6)": "14:10", "第7節 (P7)": "15:15", "第8節 (P8)": "16:10"
 }
 
+# 計算下課時間 (假設每節起始後 50 分鐘為同步點)
+SYNC_BREAK_TIMES = []
+for t_str in SCHOOL_PERIODS.values():
+    sync_t = (datetime.strptime(t_str, "%H:%M") + timedelta(minutes=50)).strftime("%H:%M")
+    SYNC_BREAK_TIMES.append(sync_t)
+
 TEACHER_LIST = ["本孚","幃捷","舒婷","珊瑩","郁均","李安","佳佳","孟璇","婉湄","逸銓",
                 "惠如","百育","峻維","品妤","彥宏","勇宏","盈盈","斐雁","淨瑜","俊萱",
                 "裕貞","慧娟","晉邦","迪文"]
@@ -58,7 +68,7 @@ LANG_DATA = {
         "monitor_title": "📊 即時借用狀態", "reserve_title": "📅 今日預約清單",
         "tree_t": "借用教師 (Teacher)", "tree_c": "班級 (Class)", "tree_q": "數量 (Qty)", 
         "tree_i": "期限 (Due)", "tree_p": "預約節次 (Period)",
-        "btn_pickup": "🚩 領取\n(Pickup)", "btn_renew": "🔄 續借\n(Renew)", "btn_return": "✅ 歸還\n(Return)", "btn_refresh": "🔄 刷新雙清單\n(Refresh)",
+        "btn_pickup": "🚩 領取\n(Pickup)", "btn_renew": "🔄 續借\n(Renew)", "btn_return": "✅ 歸還\n(Return)", "btn_refresh": "🔄 強制雲端同步\n(Sync Now)",
         "fault_title": "⚠️ 設備故障報修:", "btn_fault": " 提交 (Submit) ",
         "msg_success": "成功", "msg_error": "錯誤", "msg_warn": "提醒",
     },
@@ -69,7 +79,7 @@ LANG_DATA = {
         "monitor_title": "📊 Live Loans", "reserve_title": "📅 Today's Reservations",
         "tree_t": "Teacher", "tree_c": "Class", "tree_q": "Qty", 
         "tree_i": "Due Time", "tree_p": "Period",
-        "btn_pickup": "🚩 Pickup\n(Now)", "btn_renew": "🔄 Renew\n(+55 mins)", "btn_return": "✅ Return\n(Done)", "btn_refresh": "🔄 Refresh\n(List)",
+        "btn_pickup": "🚩 Pickup\n(Now)", "btn_renew": "🔄 Renew\n(+55 mins)", "btn_return": "✅ Return\n(Done)", "btn_refresh": "🔄 Cloud Sync\n(Sync)",
         "fault_title": "⚠️ Report Fault:", "btn_fault": " Submit ",
         "msg_success": "Success", "msg_error": "Error", "msg_warn": "Notice",
     }
@@ -77,12 +87,35 @@ LANG_DATA = {
 current_lang = "zh"
 
 # =============================================================================
-# 2. 資料庫連線引擎 (Database Connection Engine - PyInstaller 支援版)
+# 2. 本地資料處理引擎 (Local-First Data Engine)
 # =============================================================================
-def connect_to_google_sheets():
+def load_local_data():
+    """載入本地 JSON 資料"""
+    if os.path.exists(LOCAL_DB_FILE):
+        try:
+            with open(LOCAL_DB_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"本地讀取錯誤: {e}")
+            return []
+    return []
+
+def save_local_data(data):
+    """儲存資料到本地 JSON"""
+    with open(LOCAL_DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+# =============================================================================
+# 3. 雲端連線與同步模組 (Cloud Sync Engine)
+# =============================================================================
+ws_borrow = None
+ws_fault = None
+is_online = False
+
+def connect_google_sheets():
+    global ws_borrow, ws_fault, is_online
     try:
         scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        # 尋找 PyInstaller 的神祕暫存資料夾 (_MEIPASS)
         if getattr(sys, 'frozen', False):
             current_path = sys._MEIPASS
         else:
@@ -92,22 +125,40 @@ def connect_to_google_sheets():
         creds = ServiceAccountCredentials.from_json_keyfile_name(json_file, scopes)
         client = gspread.authorize(creds)
         book = client.open("ipadinnout")
-        return book.worksheet("借用平板"), book.worksheet("問題平板")
-    except Exception as e:
-        messagebox.showerror("連線失敗", f"系統無法同步雲端數據：\n{e}")
-        sys.exit()
+        ws_borrow = book.worksheet("借用平板")
+        ws_fault = book.worksheet("問題平板")
+        is_online = True
+        return True
+    except Exception:
+        print("⚠️ 網路斷線：目前進入離線作業模式，資料將暫存於本地。")
+        is_online = False
+        return False
 
-ws_borrow, ws_fault = connect_to_google_sheets()
+def sync_local_to_cloud():
+    """將本地所有資料完整覆蓋到 Google Sheets"""
+    if not connect_google_sheets():
+        print("同步失敗：目前無網路連線")
+        return False
+    
+    try:
+        local_data = load_local_data()
+        header = ["教師", "班級", "數量", "借出時間", "歸還時間", "應還時間", "狀態", "備註", "原始數量"]
+        upload_body = [header] + local_data
+        
+        ws_borrow.clear()
+        ws_borrow.update(range_name="A1", values=upload_body)
+        print(f"[{datetime.now()}] 雲端同步完成")
+        return True
+    except Exception as e:
+        print(f"同步過程中發生錯誤: {e}")
+        return False
 
 # =============================================================================
-# 3. 模態載入視窗引擎 (Loading Modal Engine) & 權限驗證
+# 4. 模態載入視窗引擎 & 權限驗證
 # =============================================================================
 def show_loading(message="資料同步中，請稍候..."):
-    """顯示一個鎖死背景的載入視窗，防止使用者連點引發 Bug"""
     load_pop = tb.Toplevel(root)
     load_pop.title("系統通知")
-    
-    # 置中運算
     w, h = 350, 150
     root.update_idletasks()
     x = root.winfo_x() + (root.winfo_width() // 2) - (w // 2)
@@ -116,11 +167,10 @@ def show_loading(message="資料同步中，請稍候..."):
     
     load_pop.transient(root)
     load_pop.resizable(False, False)
-    load_pop.grab_set() # 鎖死背景
+    load_pop.grab_set() 
     
     tb.Label(load_pop, text="⏳", font=("Microsoft JhengHei", 36)).pack(pady=(20, 5))
     tb.Label(load_pop, text=message, font=FONT_KAI_LABEL, bootstyle="info").pack()
-    
     root.update()
     return load_pop
 
@@ -134,29 +184,27 @@ def check_admin_password():
         return False
 
 # =============================================================================
-# 4. 數據處理核心 (Data Processing Core)
+# 5. 數據處理核心 (基於本地資料庫)
 # =============================================================================
-def get_latest_records():
-    try:
-        all_rows = ws_borrow.get_all_values()[1:]
-        valid_data = []
-        for row in all_rows:
-            while len(row) < 10: row.append("")
-            valid_data.append(row)
-        return valid_data
-    except Exception as e:
-        print(f"取得資料失敗: {e}")
-        return []
+def get_today_data(data_list):
+    today_string = datetime.now().strftime("%Y-%m-%d")
+    return [
+        row for row in data_list 
+        if len(row) >= 4 and row[3][:10] == today_string
+    ]
 
-def update_stock_count(records=None):
-    if records is None: records = get_latest_records()
+# 💡 獨立計算剩餘庫存的函數，方便借用與預約時檢查
+def get_current_stock():
+    raw_data = load_local_data()
+    data_list = get_today_data(raw_data)
     used_total = 0
-    for r in records:
-        if r[0].strip() != "" and r[4].strip() == "":
-            # 預約不扣庫存，只有「使用中」才扣
-            if "使用" in r[6]:
-                try: used_total += int(r[2])
-                except ValueError: pass
+    for row in data_list:
+        if row[0].strip() == "" or row[4].strip() != "": continue
+        status_val = row[6]
+        # 💡 將「預約」也算入已扣除的庫存中
+        if "使用" in status_val or "預約" in status_val:
+            try: used_total += int(row[2])
+            except: pass
     return TABLET_MAX_CAPACITY - used_total
 
 def refresh_main_table():
@@ -165,8 +213,11 @@ def refresh_main_table():
     try:
         lang = LANG_DATA[current_lang]
         current_dt = datetime.now()
-        data_list = get_latest_records()
         
+        raw_data = load_local_data()
+        data_list = get_today_data(raw_data)
+        
+        used_total = 0
         for row in data_list:
             if row[0].strip() == "" or row[4].strip() != "": continue
             status_val = row[6]
@@ -181,24 +232,21 @@ def refresh_main_table():
                     if current_dt > due_dt: tag = ("tag_overdue",)
                 except ValueError: pass
                 tree_main.insert("", "end", values=(row[0], row[1], row[2], row[5]), tags=tag)
+            
+            # 💡 介面庫存顯示也將「預約」計入扣除
+            if "使用" in status_val or "預約" in status_val:
+                try: used_total += int(row[2])
+                except: pass
         
-        rem_units = update_stock_count(data_list)
+        rem_units = TABLET_MAX_CAPACITY - used_total
         stock_style = "primary" if rem_units > 10 else "danger"
-        label_stock.config(text=lang["stock_prefix"].format(rem_units), bootstyle=stock_style)
+        status_text = lang["stock_prefix"].format(rem_units) + (" (本地模式)" if not is_online else " (已連線)")
+        label_stock.config(text=status_text, bootstyle=stock_style)
     except Exception as e:
         print(f"刷新表格失敗: {e}")
-        traceback.print_exc()
-
-def manual_refresh():
-    """帶有載入視窗的手動刷新"""
-    loading_win = show_loading("從雲端同步最新狀態...")
-    try:
-        refresh_main_table()
-    finally:
-        loading_win.destroy()
 
 # =============================================================================
-# 5. 借用與預約功能模組 (Loan & Reservation Modules)
+# 6. 借用、預約、續借、歸還與領取功能 (全部寫入本地)
 # =============================================================================
 def submit_borrow_request(mode):
     if not check_admin_password(): return
@@ -211,57 +259,93 @@ def submit_borrow_request(mode):
         messagebox.showwarning(lang["msg_warn"], "請輸入完整教師、班級與數量。"); return
     
     qty_val = int(q_str)
-    stock_val = update_stock_count()
-    if qty_val <= 0 or qty_val > stock_val:
-        messagebox.showerror(lang["msg_error"], f"數量錯誤或庫存不足 (剩餘: {stock_val})"); return
+    
+    # 💡 數量上限檢查 (不得超過50台)
+    if qty_val <= 0 or qty_val > 50:
+        messagebox.showerror(lang["msg_error"], "數量錯誤！單次借用不得超過 50 台。")
+        return
+        
+    # 💡 剩餘庫存檢查
+    current_stock = get_current_stock()
+    if qty_val > current_stock:
+        messagebox.showerror(lang["msg_error"], f"庫存不足！目前僅剩 {current_stock} 台。")
+        return
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if mode == "SHORT": due_obj = datetime.now() + timedelta(minutes=55)
     else: due_obj = datetime.combine(datetime.now().date(), time(16, 0))
     due_str = due_obj.strftime("%Y-%m-%d %H:%M:%S")
 
-    loading_win = show_loading("資料寫入中，請勿關閉視窗...")
-    try:
-        ws_borrow.append_row([t_name, c_name, qty_val, now_str, "", due_str, "使用中 (In Use)", "", qty_val], table_range="A1")
-        var_teacher.set(''); var_class.set(''); ent_qty.delete(0, tk.END)
-        refresh_main_table()
-        messagebox.showinfo(lang["msg_success"], f"【{t_name}】登記成功！\n期限: {due_str[11:16]}")
-    except Exception as e:
-        messagebox.showerror(lang["msg_error"], f"雲端寫入失敗: {e}")
-    finally:
-        loading_win.destroy()
+    local_data = load_local_data()
+    local_data.append([t_name, c_name, qty_val, now_str, "", due_str, "使用中 (In Use)", "", qty_val])
+    save_local_data(local_data)
+    
+    var_teacher.set(''); var_class.set(''); ent_qty.delete(0, tk.END)
+    refresh_main_table()
+    messagebox.showinfo(lang["msg_success"], f"【{t_name}】本地登記成功！(將自動同步)")
 
 def open_reserve_window():
     lang = LANG_DATA[current_lang]
     t_name = ent_other_name.get().strip() if var_teacher.get() == "其他" else var_teacher.get()
     c_name = var_class.get()
     q_str  = ent_qty.get().strip()
-    if not t_name or not q_str.isdigit(): return messagebox.showwarning(lang["msg_warn"], "請先輸入教師與數量。")
+    
+    # 💡 預約時也必須強制填寫班級
+    if not t_name or not c_name or not q_str.isdigit(): 
+        return messagebox.showwarning(lang["msg_warn"], "請先輸入完整教師、班級與數量。")
+
+    qty_val = int(q_str)
+
+    # 💡 數量上限檢查 (不得超過50台)
+    if qty_val <= 0 or qty_val > 50:
+        return messagebox.showerror(lang["msg_error"], "數量錯誤！單次預約不得超過 50 台。")
+
+    # 💡 剩餘庫存檢查
+    current_stock = get_current_stock()
+    if qty_val > current_stock:
+        return messagebox.showerror(lang["msg_error"], f"庫存不足！目前僅剩 {current_stock} 台。")
+
+    # ==========================================
+    # 💡 新增：未來時間防呆機制
+    # ==========================================
+    current_time = datetime.now().time()
+    available_periods = []
+    
+    for p_name, p_start_str in SCHOOL_PERIODS.items():
+        # 計算該節課的下課時間 (起始時間 + 50分鐘)
+        p_start_dt = datetime.strptime(p_start_str, "%H:%M")
+        p_end_dt = p_start_dt + timedelta(minutes=50)
+        p_end_time = p_end_dt.time()
+        
+        # 如果現在時間「還沒超過」該節課的下課時間，才加入可預約清單
+        if current_time < p_end_time:
+            available_periods.append(p_name)
+            
+    # 如果清單是空的，代表今天的課都上完了
+    if not available_periods:
+        return messagebox.showwarning(lang["msg_warn"], "今日所有節次均已結束，無法再進行預約。")
+    # ==========================================
 
     pop = tb.Toplevel(root); pop.title("預約節次"); pop.geometry("420x380"); pop.grab_set()
     tb.Label(pop, text="🗓️ 選擇預約時段\nSelect Period", font=FONT_KAI_CARD, bootstyle="primary").pack(pady=25)
-    var_p = tk.StringVar(value="第1節 (P1)")
-    tb.Combobox(pop, values=list(SCHOOL_PERIODS.keys()), font=FONT_KAI_NORMAL, state="readonly", textvariable=var_p).pack(pady=15, ipady=8)
+    
+    # 💡 預設選項改為可預約清單的第一個，選項也換成過濾後的清單
+    var_p = tk.StringVar(value=available_periods[0])
+    tb.Combobox(pop, values=available_periods, font=FONT_KAI_NORMAL, state="readonly", textvariable=var_p).pack(pady=15, ipady=8)
 
     def do_reserve():
         if not check_admin_password(): return
+        now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status_tag = f"預約中-{var_p.get()} (Reserved)"
         
-        loading_win = show_loading("預約登記中...")
-        try:
-            now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            status_tag = f"預約中-{var_p.get()} (Reserved)"
-            ws_borrow.append_row([t_name, c_name, int(q_str), now_ts, "", "", status_tag, "", int(q_str)], table_range="A1")
-            pop.destroy(); refresh_main_table(); messagebox.showinfo(lang["msg_success"], "預約已完成!")
-        except Exception as e: 
-            messagebox.showerror("錯誤", f"預約失敗: {str(e)}")
-        finally:
-            loading_win.destroy()
+        local_data = load_local_data()
+        local_data.append([t_name, c_name, int(q_str), now_ts, "", "", status_tag, "", int(q_str)])
+        save_local_data(local_data)
+        
+        pop.destroy(); refresh_main_table(); messagebox.showinfo(lang["msg_success"], "預約已寫入本地!")
 
     tb.Button(pop, text=" 確定預約 (Confirm) ", bootstyle=PRIMARY, width=20, command=do_reserve).pack(pady=30)
 
-# =============================================================================
-# 6. 續借、歸還與領取功能 (Renew, Return & Pickup Actions)
-# =============================================================================
 def action_return():
     sel = tree_main.selection()
     if not sel: return messagebox.showwarning("提醒", "請選取紀錄。")
@@ -269,18 +353,14 @@ def action_return():
     lang = LANG_DATA[current_lang]
     name_key = tree_main.item(sel[0])['values'][0]
     
-    loading_win = show_loading("歸還資料處理中...")
-    try:
-        all_data = ws_borrow.get_all_values()
-        for idx, row in enumerate(all_data):
-            if idx == 0: continue
-            if row[0] == name_key and row[4] == "":
-                ws_borrow.update(range_name=f"E{idx+1}", values=[[datetime.now().strftime("%Y-%m-%d %H:%M:%S")]])
-                messagebox.showinfo(lang["msg_success"], f"【{name_key}】平板已歸還!")
-                break
-        refresh_main_table()
-    except Exception as e: messagebox.showerror("錯誤", f"歸還操作失敗: {str(e)}")
-    finally: loading_win.destroy()
+    local_data = load_local_data()
+    for row in local_data:
+        if row[0] == name_key and row[4] == "":
+            row[4] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            break
+    save_local_data(local_data)
+    refresh_main_table()
+    messagebox.showinfo(lang["msg_success"], f"【{name_key}】平板已本地歸還!")
 
 def action_renew():
     sel = tree_main.selection()
@@ -289,21 +369,16 @@ def action_renew():
     lang = LANG_DATA[current_lang]
     name_key = tree_main.item(sel[0])['values'][0]
     
-    loading_win = show_loading("續借資料處理中...")
-    try:
-        all_data = ws_borrow.get_all_values()
-        for idx, row in enumerate(all_data):
-            if idx == 0: continue
-            if row[0] == name_key and row[4] == "" and "使用" in row[6]:
-                try: old_due = datetime.strptime(row[5], "%Y-%m-%d %H:%M:%S")
-                except ValueError: old_due = datetime.now()
-                new_due = (old_due + timedelta(minutes=55)).strftime("%Y-%m-%d %H:%M:%S")
-                ws_borrow.update(range_name=f"F{idx+1}", values=[[new_due]])
-                messagebox.showinfo(lang["msg_success"], f"續借成功至: {new_due[11:16]}")
-                break
-        refresh_main_table()
-    except Exception as e: messagebox.showerror("錯誤", f"續借操作失敗: {str(e)}")
-    finally: loading_win.destroy()
+    local_data = load_local_data()
+    for row in local_data:
+        if row[0] == name_key and row[4] == "" and "使用" in row[6]:
+            try: old_due = datetime.strptime(row[5], "%Y-%m-%d %H:%M:%S")
+            except ValueError: old_due = datetime.now()
+            row[5] = (old_due + timedelta(minutes=55)).strftime("%Y-%m-%d %H:%M:%S")
+            break
+    save_local_data(local_data)
+    refresh_main_table()
+    messagebox.showinfo(lang["msg_success"], "已成功於本地續借!")
 
 def action_pickup():
     sel = tree_res.selection()
@@ -312,39 +387,77 @@ def action_pickup():
     lang = LANG_DATA[current_lang]
     name_key = tree_res.item(sel[0])['values'][0]
     
-    loading_win = show_loading("領取資料處理中...")
-    try:
-        all_data = ws_borrow.get_all_values()
-        for idx, row in enumerate(all_data):
-            if idx == 0: continue
-            if row[0] == name_key and row[4] == "" and "預約" in row[6]:
-                new_due = (datetime.now() + timedelta(minutes=55)).strftime("%Y-%m-%d %H:%M:%S")
-                ws_borrow.update(range_name=f"F{idx+1}:G{idx+1}", values=[[new_due, "使用中 (In Use)"]])
-                messagebox.showinfo(lang["msg_success"], "領取完成!")
-                break
-        refresh_main_table()
-    except Exception as e: messagebox.showerror("錯誤", f"領取操作失敗: {str(e)}")
-    finally: loading_win.destroy()
+    local_data = load_local_data()
+    for row in local_data:
+        if row[0] == name_key and row[4] == "" and "預約" in row[6]:
+            row[5] = (datetime.now() + timedelta(minutes=55)).strftime("%Y-%m-%d %H:%M:%S")
+            row[6] = "使用中 (In Use)"
+            break
+    save_local_data(local_data)
+    refresh_main_table()
+    messagebox.showinfo(lang["msg_success"], "本地領取完成!")
 
 def send_fault():
     if not check_admin_password(): return
     msg = ent_fault.get().strip()
     if msg:
-        loading_win = show_loading("報修資料提交中...")
+        loading_win = show_loading("報修資料提交雲端中...")
         try: 
-            ws_fault.append_row([msg, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-            messagebox.showinfo("成功", "故障紀錄已提交!")
-            ent_fault.delete(0, tk.END)
+            if connect_google_sheets():
+                ws_fault.append_row([msg, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+                messagebox.showinfo("成功", "故障紀錄已提交!")
+                ent_fault.delete(0, tk.END)
+            else:
+                messagebox.showwarning("離線提示", "目前無網路，故障報修請等恢復連線後再試。")
         except Exception as e: 
             messagebox.showerror("錯誤", f"提交失敗: {e}")
         finally:
             loading_win.destroy()
 
 # =============================================================================
-# 7. UI 主介面架構 (Master GUI Architecture)
+# 7. 自動排程與手動同步 (Threading)
+# =============================================================================
+def background_scheduler():
+    """後台檢查時間：13:00 上傳、下課時間同步"""
+    last_sync_hour = -1
+    last_sync_minute = -1
+    
+    while True:
+        now = datetime.now()
+        current_hm = now.strftime("%H:%M")
+        
+        if current_hm == "13:00" and last_sync_hour != now.hour:
+            sync_local_to_cloud()
+            last_sync_hour = now.hour
+            
+        if current_hm in SYNC_BREAK_TIMES and last_sync_minute != now.minute:
+            sync_local_to_cloud()
+            last_sync_minute = now.minute
+            
+        pytime.sleep(30)
+
+def manual_sync_trigger():
+    """手動強制雙向同步"""
+    loading_win = show_loading("強制與雲端同步所有數據中...")
+    
+    def task():
+        sync_local_to_cloud()
+        try:
+            if connect_google_sheets():
+                cloud_data = ws_borrow.get_all_values()[1:]
+                if cloud_data: save_local_data(cloud_data)
+        except: pass
+        
+        # 使用 root.after 確保 GUI 相關操作回到主執行緒
+        root.after(0, lambda: [loading_win.destroy(), refresh_main_table(), messagebox.showinfo("成功", "雲端同步已完成！")])
+
+    threading.Thread(target=task, daemon=True).start()
+
+# =============================================================================
+# 8. UI 主介面架構 (Master GUI Architecture)
 # =============================================================================
 root = tb.Window(title=f"{APP_TITLE_ZH} {APP_VERSION}", themename="litera")
-root.state("zoomed") # 啟動即最大化全螢幕
+root.state("zoomed") 
 
 style = tb.Style()
 style.configure("Treeview.Heading", font=FONT_KAI_BUTTON)
@@ -462,7 +575,6 @@ btn_reserve.pack(side="left", padx=15, pady=15, fill="y")
 monitor_f = tb.Frame(main_f)
 monitor_f.pack(fill="both", expand=True, padx=80, pady=20)
 
-# 強制保證絕對的 50% / 50% 寬度分佈
 monitor_f.columnconfigure(0, weight=1, uniform="equal_split")
 monitor_f.columnconfigure(1, weight=1, uniform="equal_split")
 
@@ -472,9 +584,7 @@ left_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
 right_pane = tb.Frame(monitor_f)
 right_pane.grid(row=0, column=1, sticky="nsew", padx=(15, 0))
 
-# ==========================================
-# 左側：即時借用狀態區 (Live Loans)
-# ==========================================
+# 左側：即時借用狀態區
 lbl_monitor = tb.Label(left_pane, text="📊 即時借用狀態", font=FONT_KAI_CARD)
 lbl_monitor.pack(anchor="w", pady=10)
 
@@ -498,9 +608,7 @@ ctrl_left.pack(fill="x", pady=10)
 btn_renew  = create_btn(ctrl_left, "🔄 續借 (Renew)", SECONDARY, action_renew); btn_renew.pack(side="left", padx=(0, 10), fill="y")
 btn_return = create_btn(ctrl_left, "✅ 歸還 (Return)", PRIMARY, action_return); btn_return.pack(side="left", padx=10, fill="y")
 
-# ==========================================
-# 右側：今日預約清單區 (Reservations)
-# ==========================================
+# 右側：今日預約清單區
 lbl_reserve = tb.Label(right_pane, text="📅 今日預約清單", font=FONT_KAI_CARD)
 lbl_reserve.pack(anchor="w", pady=10)
 
@@ -522,7 +630,7 @@ tree_res.tag_configure("tag_res", background="#E1F5FE")
 ctrl_right = tb.Frame(right_pane)
 ctrl_right.pack(fill="x", pady=10)
 btn_pickup = create_btn(ctrl_right, "🚩 領取 (Pickup)", WARNING, action_pickup); btn_pickup.pack(side="left", padx=(0, 10), fill="y")
-btn_refresh = tb.Button(ctrl_right, text="🔄 刷新雙清單", bootstyle="outline-primary", command=manual_refresh)
+btn_refresh = tb.Button(ctrl_right, text="🔄 強制雲端同步", bootstyle="outline-primary", command=manual_sync_trigger)
 btn_refresh.pack(side="right", fill="y")
 
 # --- Footer Fault Report ---
@@ -538,11 +646,9 @@ btn_fault.pack(side="left", padx=20)
 # --- UI Text Update Function ---
 def update_ui_text():
     lang = LANG_DATA[current_lang]
-    
     lbl_teacher.config(text=lang["lbl_teacher"])
     lbl_class.config(text=lang["lbl_class"])
     lbl_qty.config(text=lang["lbl_qty"])
-    
     btn_borrow.config(text=lang["btn_borrow"])
     btn_allday.config(text=lang["btn_allday"])
     btn_reserve.config(text=lang["btn_reserve"])
@@ -551,39 +657,39 @@ def update_ui_text():
     btn_return.config(text=lang["btn_return"])
     btn_refresh.config(text=lang["btn_refresh"])
     btn_fault.config(text=lang["btn_fault"])
-    
     lbl_monitor.config(text=lang["monitor_title"])
     lbl_reserve.config(text=lang["reserve_title"])
     lbl_fault.config(text=lang["fault_title"])
-    
-    tree_main.heading("t", text=lang["tree_t"])
-    tree_main.heading("c", text=lang["tree_c"])
-    tree_main.heading("q", text=lang["tree_q"])
-    tree_main.heading("i", text=lang["tree_i"])
-    
-    tree_res.heading("t", text=lang["tree_t"])
-    tree_res.heading("c", text=lang["tree_c"])
-    tree_res.heading("q", text=lang["tree_q"])
-    tree_res.heading("p", text=lang["tree_p"])
+    tree_main.heading("t", text=lang["tree_t"]); tree_main.heading("c", text=lang["tree_c"])
+    tree_main.heading("q", text=lang["tree_q"]); tree_main.heading("i", text=lang["tree_i"])
+    tree_res.heading("t", text=lang["tree_t"]); tree_res.heading("c", text=lang["tree_c"])
+    tree_res.heading("q", text=lang["tree_q"]); tree_res.heading("p", text=lang["tree_p"])
 
 # =============================================================================
-# 8. 系統背景守護與啟動 (Background Monitor & Launch)
+# 9. 系統啟動與背景執行緒 (System Initialization)
 # =============================================================================
+def initial_sync():
+    """程式啟動時的雲端資料下載 (背景執行)"""
+    if connect_google_sheets():
+        try:
+            data = ws_borrow.get_all_values()[1:]
+            if data: save_local_data(data)
+            root.after(0, refresh_main_table) # 更新回 UI
+        except: pass
+
 def update_clock():
     try: lbl_clock.config(text=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    except Exception: pass
+    except: pass
     root.after(1000, update_clock) 
 
-def auto_refresh_data():
-    refresh_main_table()
-    root.after(900000, auto_refresh_data) 
-
-# 初始化
-toggle_theme() # 套用預設主題與修正 Treeview 參數
+# UI 初始化套用
+toggle_theme() 
 update_ui_text()
-refresh_main_table()
-
+refresh_main_table() # 先顯示本地快取
 update_clock()
-auto_refresh_data()
+
+# 啟動背景服務
+threading.Thread(target=initial_sync, daemon=True).start()
+threading.Thread(target=background_scheduler, daemon=True).start()
 
 root.mainloop()
